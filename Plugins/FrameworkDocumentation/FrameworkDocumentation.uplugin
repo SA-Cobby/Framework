@@ -1,7 +1,7 @@
 {
 	"FileVersion": 3,
-	"Version": 5,
-	"VersionName": "1.4.0",
+	"Version": 6,
+	"VersionName": "1.5.0",
 	"FriendlyName": "FrameworkDocumentation",
 	"Description": "A short, clickable Unreal Engine 5.4 reference in an Editor Utility Widget.",
 	"Category": "Editor",
@@ -11,7 +11,7 @@
 	"MarketplaceURL": "",
 	"SupportURL": "",
 	"EngineVersion": "5.4.0",
-	"CanContainContent": false,
+	"CanContainContent": true,
 	"Installed": true,
 	"Modules": [
 		{

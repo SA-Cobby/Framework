@@ -12,6 +12,12 @@ The packaged Windows DLL is built against UE 5.4.4. For another 5.4 patch or a s
 
 ## Configure
 
+**Automatically connect Unreal's Git revision control** is enabled by default in the GitHub Bridge window. After successful project repository detection, it selects the engine's **Git** provider and refreshes project file status in the background. This enables Unreal's normal asset revision-control menus and status icons alongside GitHub Bridge's commit/push workflow. Selecting Git replaces any other active revision-control provider.
+
+Uncheck this setting to stop GitHub Bridge from selecting/configuring Unreal's provider. It leaves the currently selected provider connected; disconnect or choose another provider through Unreal's own Revision Control menu. The preference is saved per project as `AutoConnectRevisionControl` in `Saved/Config/GitHubBridge.ini`.
+
+The plugin prepares the Git binary path before the built-in Git provider loads, including a project-local `git` installation. If you change that path or enable automation after the provider has already loaded a different path, the settings panel requests an editor restart. It respects Unreal's existing global/per-project revision-control settings scope without changing that preference; if you have chosen global settings, provider/path changes use that shared scope. Connection status and errors appear below the checkbox. Connecting revision control opens the local checkout; it does not authenticate to GitHub, fetch, push, change branches, or initialize a repository.
+
 The plugin checks for a project-local Git installation under the folder named `git` beside your `.uproject` on startup and whenever you click **Detect project repository**. Search order is `git/cmd/git.exe`, `git/bin/git.exe`, `git/git.exe`, then `git/mingw64/bin/git.exe`. The first executable found populates the Git executable field and is used for subsequent operations. If none is found, the configured executable path is retained (initially the standard system installation). You can still edit the field manually between detections.
 
 Place a complete Git for Windows/PortableGit distribution there, keeping its supporting directories intact; copying only `git.exe` is insufficient. This is an optional local installation, separate from Git's hidden `.git` repository metadata folder. Add `/git/` to your repository's `.gitignore` if you do not want to commit the bundled Git installation. A broken local installation reports a Git error; fix/remove it or choose a working executable manually. Git itself is not bundled in this download.
@@ -32,13 +38,33 @@ Configuration is local to the Unreal project at `Saved/Config/GitHubBridge.ini`.
 
 ## Daily use
 
+Open **Window > GitHub Bridge Diff**, or click **Review changes / diff** in GitHub Bridge. **Pending changes vs last commit** shows the combined staged/unstaged diff against `HEAD` and previews untracked files as additions. **Latest commit vs previous commit** compares `HEAD` to its first parent; an initial commit is compared against an empty tree. Use the buttons to refresh after editing or saving. Unsaved Unreal assets are not represented until saved to disk.
+
+The diff is read-only and uses a monospaced unified patch: `-` lines are removed and `+` lines are added. Binary files, including most `.uasset` and `.umap` assets, are identified without a text patch. Use Unreal's native asset Diff against Depot for supported asset types. Ignored untracked files are excluded. External Git diff/text-conversion helpers are disabled for this preview. Large previews are capped at approximately two million characters and fifty untracked files; use a Git client to inspect the full diff when a truncation notice appears. Reviewing does not stage, commit, save assets, or access GitHub.
+
+All push actions now check the destination branch, fetch its latest history, and rebase local commits onto it when necessary before pushing. This includes native Unreal submissions, the plugin's commit/push button, exit-time push, and **Rebase + push existing commits**. If the destination branch does not exist yet, it is created without a rebase. If the fetched remote tip is already an ancestor of the local tip, no history rewrite is needed.
+
+Before a required rebase, tracked files must be clean. Commit or stash unselected tracked edits yourself; the plugin does not automatically stash or change their staging state. Untracked files are left alone, and Git will refuse a rebase that would overwrite them. An existing merge/rebase/cherry-pick must be finished or aborted first. A queued native submission is also refused if the branch has advanced since it was queued; review the branch and use the existing-commits action to retry.
+
+The plugin preserves the pre-rebase tip under `refs/github-bridge/pre-rebase/<id>` and reports the ref in its output. Rebase conflicts stop the push and retain Git's conflict state for resolution with your usual Git tools (`git rebase --continue` or `git rebase --abort`). No force push is used. If a push is rejected after a successful rebase, the rebased local history and backup remain available. Restart Unreal before editing assets changed on disk by the rebase. GitHub account-backed tests are separate from the included local-remote tests.
+
+**Push to GitHub after a successful Unreal Git submit** is enabled by default. It applies to the built-in Git provider's file-based submit dialog, including Submit Content and asset submission actions that use that dialog. Unreal still handles file selection, saving, validation, and marking new files for add. GitHub Bridge preserves pre-submit and asset virtualization processing, executes the native Git CheckIn for the selected files, then queues an asynchronous push only if that check-in succeeds. Failed/cancelled submits do not queue a push. Other revision-control providers are unaffected.
+
+The queued push synchronizes and rebases the submitted local tip when necessary, then uploads the resulting history to the configured GitHub branch. It never stages or commits other changes. A notification reports success or failure; detailed output appears in GitHub Bridge. If authentication, branch checks, or the network prevent the push, the local commit remains safe. Use **Rebase + push existing commits** to retry without staging any additional files. GitHub Bridge's own commit/push action remains separate and does not trigger a second automatic push.
+
+Disable the checkbox to return native submission to its usual local-commit behavior. Its per-project key is `PushAfterUnrealSubmit` in the plugin settings ini. This uses UE 5.4's public submit override; if another extension owns that override, GitHub Bridge leaves it alone and reports that automatic submit push is unavailable. It does not watch arbitrary external commits, replace Git hooks, or change engine files. The native check-in is refused while a GitHub Bridge operation is running; wait for the current operation before submitting. Unreal may already have marked newly selected files for add before reaching this check.
+
 **Refresh status** shows changed, deleted, staged, and untracked files. Review this before committing. **Save assets, commit ALL changes + push** saves dirty Unreal packages, stages all non-ignored changes across the **whole repository**, commits with your message, and pushes to the explicitly configured branch. Existing staged changes are included. This version does not have per-file selection. A sensible `.gitignore` is required; configure Git LFS for Unreal binary assets before the first commit.
 
 **Pull** requires a clean working tree and uses fast-forward only. Diverged histories are refused. **Switch branch** also requires a clean tree. Both can change assets on disk: close asset editors first and restart Unreal afterwards so loaded assets do not remain stale. Resolve conflicts, stash, create branches, and manage LFS locks using your usual Git tools.
 
-When you exit normally through the editor window or File > Exit, the plugin offers:
+When you exit normally through the editor window or File > Exit, GitHub Bridge first checks Unreal's unsaved map/content packages, the repository's staged/modified/deleted/untracked files, and local commits not present on the configured `origin` branch. If everything is saved, clean, and already pushed, the plugin's exit dialog is skipped and Unreal closes through its normal flow. A clean branch that is only behind the remote also has nothing to push.
 
-- **Commit + push, then close**: save packages, stage/commit changes if any, and push. With a clean tree, this still pushes existing local commits. Missing configuration, cancelled saves, rejected commits, dirty post-hook state, timeouts, and failed pushes keep Unreal open.
+The commit comparison uses local remote-tracking information, updated by normal fetch/push operations; exit does not contact GitHub or require a login. If no remote-tracking branch exists, existing local commits are treated as needing a push. If Git/configuration errors prevent verification, the dialog remains available and explains the uncertainty. Ignored files do not trigger a Git-change prompt. Unsaved Unreal assets trigger it even when the on-disk repository is currently clean.
+
+When there is work to save/push or its status cannot be verified, the plugin offers:
+
+- **Save, commit + push, then close**: save packages first, stage/commit non-ignored changes if any, and push. With a clean tree, this still pushes existing local commits. Missing configuration, cancelled saves, rejected commits, dirty post-hook state, timeouts, and failed pushes keep Unreal open.
 - **Close without pushing**: continue Unreal's normal shutdown/save prompts.
 - **Cancel exit** (or the dialog's X): keep Unreal open.
 
@@ -59,3 +85,6 @@ Push never uses force. A rejected push retains the local commit: reconcile the b
 Adjust paths for your machine. Run the editor automation test `GitHubBridge.RepositoryGuardsAndProcessArguments` in Session Frontend > Automation. It creates an isolated repository under the project's `Saved/Automation/GitHubBridge` folder and needs Git at the default Windows location. It verifies actual process argument handling, local repository configuration, branch/remote guards, clean-tree requirements, and token-in-URL rejection without accessing GitHub.
 
 Real-account browser authentication and live GitHub pushes require a separate account-backed manual check. No GitHub credentials or remote repository are bundled.
+
+The `GitHubBridge.UnrealGitProviderIntegration` automation test exercises startup provider selection, the engine's actual Git provider, opt-out behavior, and a Connect/status refresh. Run it only from an isolated test project that is already a Git checkout. It temporarily selects Git and restores the original provider afterwards; it does not initialize or commit a repository. Automatic revision-control connection runs in both normal and unattended editors and is skipped for commandlets.
+

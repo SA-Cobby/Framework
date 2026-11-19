@@ -1,0 +1,66 @@
+#include "/Engine/Private/Common.ush"
+
+Texture2D SourceColor;
+Texture2D SmearTexture;
+SamplerState LinearSampler;
+float4 Rect;
+float2 SceneSize;
+float2 WorkSize;
+float2 DirectionStep;
+float3 Tint;
+float Threshold;
+float Intensity;
+float Falloff;
+int DebugViewMode;
+int Mode;
+
+float3 SampleSmear(float2 UV)
+{
+    if (any(UV < 0.0f) || any(UV > 1.0f)) return 0.0f;
+    return SmearTexture.SampleLevel(LinearSampler, UV, 0.0f).rgb;
+}
+
+void MainPS(float4 UVAndScreenPos : TEXCOORD0, float4 Position : SV_POSITION, out float4 Color : SV_Target0)
+{
+    if (Mode == 0)
+    {
+        // Sensor overload extraction
+        float2 v = Position.xy / WorkSize;
+        float2 samplePixel = Rect.xy + v * Rect.zw;
+        samplePixel = clamp(samplePixel, Rect.xy + 0.5f, Rect.xy + Rect.zw - 0.5f);
+        float3 c = max(SourceColor.SampleLevel(LinearSampler, samplePixel / SceneSize, 0.0f).rgb, 0.0f);
+        float l = dot(c, float3(0.2126f, 0.7152f, 0.0722f)) / max(View.PreExposure, 0.00001f);
+        float weight = saturate((l - Threshold) / max(l, 0.00001f));
+        Color = float4(c * weight, 0.0f);
+    }
+    else if (Mode == 1)
+    {
+        // 1D directional column / row dilation pass
+        float2 uv = Position.xy / WorkSize;
+        float3 c = SampleSmear(uv) * 4.0f;
+        c += (SampleSmear(uv - DirectionStep) + SampleSmear(uv + DirectionStep)) * 3.0f;
+        c += (SampleSmear(uv - 2.0f * DirectionStep) + SampleSmear(uv + 2.0f * DirectionStep)) * 2.0f;
+        c += (SampleSmear(uv - 3.0f * DirectionStep) + SampleSmear(uv + 3.0f * DirectionStep)) * 1.0f;
+        Color = float4(c / 16.0f, 0.0f);
+    }
+    else if (Mode == 2)
+    {
+        // Composite pass
+        float4 source = SourceColor.Load(int3(Position.xy, 0));
+        float2 uv = (Position.xy - Rect.xy) / Rect.zw;
+        float3 smear = SampleSmear(uv) * Intensity * Tint;
+
+        if (DebugViewMode == 5) // SmearOnly: isolated smear over black
+        {
+            Color = float4(smear, source.a);
+        }
+        else
+        {
+            Color = float4(source.rgb + smear, source.a);
+        }
+    }
+    else
+    {
+        Color = 0.0f;
+    }
+}

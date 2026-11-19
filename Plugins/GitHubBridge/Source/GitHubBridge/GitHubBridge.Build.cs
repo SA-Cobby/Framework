@@ -7,7 +7,7 @@ public class GitHubBridge : ModuleRules
         PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
         PrivateDependencyModuleNames.AddRange(new[] {
             "Core", "CoreUObject", "Engine", "Slate", "SlateCore",
-            "UnrealEd", "MainFrame", "ToolMenus"
+            "UnrealEd", "MainFrame", "ToolMenus", "SourceControl", "SourceControlWindows", "Virtualization"
         });
     }
 }

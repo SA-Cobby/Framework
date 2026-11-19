@@ -1,0 +1,255 @@
+#include "/Engine/Private/Common.ush"
+
+Texture2D SourceColor;
+Texture2D DepthTexture;
+Texture2D NormalTexture;
+Texture2D AlbedoTexture;
+Texture2D MaterialTexture;
+float4 Rect;
+int CelEnabled;
+int InkEnabled;
+int Bands;
+float Strength;
+float ShadowBrightness;
+float WhitePoint;
+float EmissiveThreshold;
+float OutlineWidth;
+float OutlineStrength;
+float DepthThreshold;
+float NormalThreshold;
+float3 InkColor;
+int Silhouettes;
+int Creases;
+int SeparateStyles;
+float SilhouetteWidth;
+float SilhouetteStrength;
+float CreaseWidth;
+float CreaseStrength;
+float3 SilhouetteColor;
+float3 CreaseColor;
+int RampEnabled;
+int ContinuousRamp;
+float RampStrength;
+float LightColorInfluence;
+float4 RampSamples[64];
+int AdaptiveInkColor;
+float AdaptiveInkStrength;
+float AdaptiveInkDarkness;
+int DistanceFadeEnabled;
+float FadeStartDistance;
+float FadeEndDistance;
+int HalftoneEnabled;
+int HalftoneStyle;
+float HalftoneDensity;
+float HalftoneStrength;
+float HalftoneThreshold;
+float HalftoneSoftness;
+float3 HalftoneTint;
+int DebugViewMode;
+
+float Luma(float3 C)
+{
+    return dot(C, float3(0.2126f, 0.7152f, 0.0722f));
+}
+
+float3 Ramp(float T)
+{
+    float X = saturate(T) * 63.0f;
+    int A = min((int)floor(X), 62);
+    return lerp(RampSamples[A].rgb, RampSamples[A + 1].rgb, X - (float)A);
+}
+
+void MainPS(float4 UVAndScreenPos : TEXCOORD0, float4 Position : SV_POSITION, out float4 OutColor : SV_Target0)
+{
+    int2 pixel = int2(Position.xy);
+    float4 source = SourceColor.Load(int3(pixel, 0));
+    float z = DepthTexture.Load(int3(pixel, 0)).r;
+    float3 linearColor = max(source.rgb, 0.0f) / max(View.PreExposure, 0.00001f);
+    uint model = (uint)round(MaterialTexture.Load(int3(pixel, 0)).a * 255.0f) & 15;
+
+    // Keep sky, unlit effects, and very bright pixels unchanged.
+    if (z <= 0.0f || model == 0 || Luma(linearColor) > EmissiveThreshold)
+    {
+        if (DebugViewMode == 2) // OutlinesOnly: white background for sky/unlit
+        {
+            OutColor = float4(1.0f, 1.0f, 1.0f, source.a);
+            return;
+        }
+        OutColor = source;
+        return;
+    }
+
+    float3 albedo = max(AlbedoTexture.Load(int3(pixel, 0)).rgb, 0.04f);
+    float3 result = linearColor;
+    float3 celLightingResult = linearColor;
+
+    if (CelEnabled != 0)
+    {
+        float3 light = linearColor / albedo;
+        float lighting = Luma(light);
+        float normalizedLight = saturate(lighting / WhitePoint);
+        float band = round(normalizedLight * (float)(Bands - 1)) / max((float)(Bands - 1), 1.0f);
+        float target = lerp(ShadowBrightness, 1.0f, band) * WhitePoint;
+        float3 hue = (lighting > 0.0001f) ? min(light / lighting, 4.0f) : float3(1.0f, 1.0f, 1.0f);
+
+        if (RampEnabled != 0)
+        {
+            float T = (ContinuousRamp != 0) ? normalizedLight : band;
+            float3 tinted = lerp(float3(1.0f, 1.0f, 1.0f), hue, LightColorInfluence) * Ramp(T);
+            hue = lerp(hue, tinted, RampStrength);
+        }
+
+        celLightingResult = hue * target;
+        result = lerp(linearColor, albedo * celLightingResult, Strength);
+
+        // Halftone / Manga crosshatch shading in shadow zones
+        if (HalftoneEnabled != 0 && normalizedLight < HalftoneThreshold)
+        {
+            float shadowDepth = 1.0f - (normalizedLight / HalftoneThreshold);
+            float pattern = 0.0f;
+
+            if (HalftoneStyle == 0) // Ben-Day Comic Dots (45° rotated screen grid)
+            {
+                float2 rotPix = float2(pixel.x + pixel.y, pixel.x - pixel.y) * 0.7071f;
+                float2 dotCoord = frac(rotPix / max(HalftoneDensity, 2.0f)) - 0.5f;
+                float dist = length(dotCoord);
+                float dotRadius = lerp(0.06f, 0.48f, shadowDepth);
+                pattern = smoothstep(dotRadius + HalftoneSoftness, dotRadius - HalftoneSoftness, dist);
+            }
+            else if (HalftoneStyle == 1) // Manga Crosshatch (1 line in light shadow, 2 in deep shadow)
+            {
+                float line1 = abs(frac((pixel.x + pixel.y) / max(HalftoneDensity, 2.0f)) - 0.5f);
+                float line2 = abs(frac((pixel.x - pixel.y) / max(HalftoneDensity, 2.0f)) - 0.5f);
+                float width1 = lerp(0.04f, 0.35f, shadowDepth);
+                float pat1 = smoothstep(width1 + HalftoneSoftness, width1 - HalftoneSoftness, line1);
+                float pat2 = 0.0f;
+                if (shadowDepth > 0.4f)
+                {
+                    float width2 = lerp(0.04f, 0.35f, (shadowDepth - 0.4f) / 0.6f);
+                    pat2 = smoothstep(width2 + HalftoneSoftness, width2 - HalftoneSoftness, line2);
+                }
+                pattern = saturate(pat1 + pat2);
+            }
+            else // Single-direction diagonal hatch lines
+            {
+                float hatchLine = abs(frac((pixel.x + pixel.y) / max(HalftoneDensity, 2.0f)) - 0.5f);
+                float width = lerp(0.04f, 0.45f, shadowDepth);
+                pattern = smoothstep(width + HalftoneSoftness, width - HalftoneSoftness, hatchLine);
+            }
+
+            float blend = pattern * HalftoneStrength * shadowDepth;
+            result = lerp(result, HalftoneTint * albedo, blend);
+        }
+    }
+
+    // Diagnostic view mode: Cel lighting only without base color texture
+    if (DebugViewMode == 4)
+    {
+        OutColor = float4(celLightingResult * View.PreExposure, source.a);
+        return;
+    }
+
+    float silhouetteOut = 0.0f;
+    float creaseOut = 0.0f;
+
+    if (InkEnabled != 0)
+    {
+        float depth = ConvertFromDeviceZ(z);
+        float3 n = normalize(NormalTexture.Load(int3(pixel, 0)).xyz * 2.0f - 1.0f);
+
+        // Distance attenuation
+        float fade = 1.0f;
+        if (DistanceFadeEnabled != 0 && depth > 0.0f)
+        {
+            fade = 1.0f - saturate((depth - FadeStartDistance) / max(FadeEndDistance - FadeStartDistance, 1.0f));
+        }
+
+        const float2 offsets[8] = {
+            float2(1, 0), float2(-1, 0), float2(0, 1), float2(0, -1),
+            float2(1, 1), float2(-1, 1), float2(1, -1), float2(-1, -1)
+        };
+
+        [unroll] for (int i = 0; i < 8; ++i)
+        {
+            if (Silhouettes != 0)
+            {
+                float baseW = (SeparateStyles != 0) ? SilhouetteWidth : OutlineWidth;
+                float width = max(0.5f, baseW * lerp(0.4f, 1.0f, fade));
+                int2 q = int2(clamp(float2(pixel) + round(offsets[i] * width), Rect.xy, Rect.zw));
+                float qz = DepthTexture.Load(int3(q, 0)).r;
+                float qdepth = ConvertFromDeviceZ(max(qz, 0.00000001f));
+                float dz = abs(depth - qdepth) / max(min(depth, qdepth), 1.0f);
+
+                if (SeparateStyles != 0 && qz > 0.0f)
+                {
+                    int2 opposite = int2(clamp(float2(pixel) - round(offsets[i] * width), Rect.xy, Rect.zw));
+                    float oz = DepthTexture.Load(int3(opposite, 0)).r;
+                    if (oz > 0.0f)
+                    {
+                        float od = ConvertFromDeviceZ(oz);
+                        bool ortho = View.ViewToClip[3][3] > 0.5f;
+                        float c = ortho ? depth : rcp(max(depth, 0.0001f));
+                        float a = ortho ? qdepth : rcp(max(qdepth, 0.0001f));
+                        float b = ortho ? od : rcp(max(od, 0.0001f));
+                        dz = abs(a + b - 2.0f * c) / max(abs(c), 0.000001f);
+                    }
+                    else
+                    {
+                        dz = 1.0f;
+                    }
+                }
+
+                silhouetteOut = max(silhouetteOut, (qz <= 0.0f) ? 1.0f : smoothstep(DepthThreshold, DepthThreshold * 1.5f, dz));
+            }
+
+            if (Creases != 0)
+            {
+                float baseW = (SeparateStyles != 0) ? CreaseWidth : OutlineWidth;
+                float width = max(0.5f, baseW * lerp(0.4f, 1.0f, fade));
+                int2 q = int2(clamp(float2(pixel) + round(offsets[i] * width), Rect.xy, Rect.zw));
+                float qz = DepthTexture.Load(int3(q, 0)).r;
+                if (qz > 0.0f)
+                {
+                    float qdepth = ConvertFromDeviceZ(qz);
+                    float dz = abs(depth - qdepth) / max(min(depth, qdepth), 1.0f);
+                    float3 qn = normalize(NormalTexture.Load(int3(q, 0)).xyz * 2.0f - 1.0f);
+                    float dn = 1.0f - saturate(dot(n, qn));
+                    float sameSurface = (SeparateStyles != 0) ? (1.0f - smoothstep(DepthThreshold, DepthThreshold * 1.5f, dz)) : 1.0f;
+                    creaseOut = max(creaseOut, smoothstep(NormalThreshold, NormalThreshold * 1.5f, dn) * sameSurface);
+                }
+            }
+        }
+
+        // Apply distance fade to line strengths
+        silhouetteOut *= fade;
+        creaseOut *= fade;
+
+        // Diagnostic view mode: Outlines Only (lines over pure white)
+        if (DebugViewMode == 2)
+        {
+            float total = (SeparateStyles != 0)
+                ? saturate(silhouetteOut * SilhouetteStrength + creaseOut * CreaseStrength)
+                : saturate(max(silhouetteOut, creaseOut) * OutlineStrength);
+            OutColor = float4(lerp(float3(1.0f, 1.0f, 1.0f), float3(0.0f, 0.0f, 0.0f), total), source.a);
+            return;
+        }
+
+        // Adaptive Inking: tint lines with surface albedo for an anime aesthetic
+        float3 adaptiveColor = albedo * AdaptiveInkDarkness;
+        float3 curInkColor = (AdaptiveInkColor != 0) ? lerp(InkColor, adaptiveColor, AdaptiveInkStrength) : InkColor;
+        float3 curSilColor = (AdaptiveInkColor != 0) ? lerp(SilhouetteColor, adaptiveColor, AdaptiveInkStrength) : SilhouetteColor;
+        float3 curCreaseColor = (AdaptiveInkColor != 0) ? lerp(CreaseColor, adaptiveColor, AdaptiveInkStrength) : CreaseColor;
+
+        if (SeparateStyles != 0)
+        {
+            result = lerp(result, max(curCreaseColor, 0.0f), creaseOut * CreaseStrength * OutlineStrength);
+            result = lerp(result, max(curSilColor, 0.0f), silhouetteOut * SilhouetteStrength * OutlineStrength);
+        }
+        else
+        {
+            result = lerp(result, max(curInkColor, 0.0f), max(silhouetteOut, creaseOut) * OutlineStrength);
+        }
+    }
+
+    OutColor = float4(result * View.PreExposure, source.a);
+}

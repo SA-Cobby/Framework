@@ -1,4 +1,5 @@
 #include "QuickGuideWidget.h"
+#include "FrameworkDocumentationPanel.h"
 #include "QuickGuideTopics.h"
 #include "Widgets/SCompoundWidget.h"
 #include "Widgets/Input/SButton.h"
@@ -44,7 +45,9 @@ namespace
 class SQuickGuide : public SCompoundWidget
 {
 public:
-    SLATE_BEGIN_ARGS(SQuickGuide) {} SLATE_END_ARGS()
+    SLATE_BEGIN_ARGS(SQuickGuide) : _ShowIntroduction(true) {}
+        SLATE_ARGUMENT(bool, ShowIntroduction)
+    SLATE_END_ARGS()
 
     void Construct(const FArguments& Args)
     {
@@ -117,6 +120,7 @@ public:
         ];
         RefreshTopics();
         SelectTopic(0);
+        if (!Args._ShowIntroduction) Pages->SetActiveWidgetIndex(1);
         if (QuickGuideSettings::PlayWelcomeAnimation() && !FApp::IsUnattended()) Welcome.Play(AsShared());
         else Welcome.JumpToEnd();
     }
@@ -281,9 +285,9 @@ private:
     }
 };
 
-TSharedRef<SWidget> UQuickGuideWidget::RebuildWidget()
+TSharedRef<SWidget> UFrameworkDocumentationPanel::RebuildWidget()
 {
-    return SNew(SQuickGuide);
+    return SNew(SQuickGuide).ShowIntroduction(false);
 }
 
 #if WITH_DEV_AUTOMATION_TESTS

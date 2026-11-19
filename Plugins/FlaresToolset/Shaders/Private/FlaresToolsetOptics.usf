@@ -1,0 +1,92 @@
+#include "/Engine/Private/Common.ush"
+
+Texture2D SourceColor;
+SamplerState LinearSampler;
+float4 Rect;
+float2 SceneSize;
+int DistortionEnabled;
+float DistortionStrength;
+float AnamorphicSqueeze;
+float CurvatureAxisRatio;
+float DistortionScale;
+int AberrationEnabled;
+float AberrationStrength;
+float AberrationRadialExponent;
+float AberrationEdgeThreshold;
+float AberrationEdgeSensitivity;
+int DebugViewMode;
+
+void MainPS(float4 UVAndScreenPos : TEXCOORD0, float4 Position : SV_POSITION, out float4 OutColor : SV_Target0)
+{
+    float2 uv = (Position.xy - Rect.xy) / Rect.zw;
+    float4 source = SourceColor.Load(int3(Position.xy, 0));
+    float aspect = Rect.z / max(Rect.w, 1.0f);
+
+    float2 warpedUV = uv;
+    if (DistortionEnabled != 0 && abs(DistortionStrength) > 0.0001f)
+    {
+        float2 p = (uv - 0.5f) * 2.0f;
+        float px2 = p.x * p.x * AnamorphicSqueeze;
+        float py2 = p.y * p.y * CurvatureAxisRatio;
+        float r2 = px2 + py2;
+        float factor = 1.0f + DistortionStrength * r2 + (DistortionStrength * 0.5f) * r2 * r2;
+        float2 warpedP = p * factor * DistortionScale;
+        warpedUV = 0.5f + warpedP * 0.5f;
+
+        if (any(warpedUV < 0.0f) || any(warpedUV > 1.0f))
+        {
+            OutColor = float4(0.0f, 0.0f, 0.0f, source.a);
+            return;
+        }
+    }
+
+    float3 finalColor;
+    if (AberrationEnabled != 0 && AberrationStrength > 0.001f)
+    {
+        float2 v = warpedUV - 0.5f;
+        float radialDist = length(v * float2(aspect, 1.0f)) * 1.4142f;
+        float radialFalloff = pow(saturate(radialDist), AberrationRadialExponent);
+
+        // Sample neighboring pixels to compute high-contrast luma edge gradient
+        float2 texel = 1.5f / SceneSize;
+        float3 cCenter = SourceColor.SampleLevel(LinearSampler, warpedUV, 0.0f).rgb;
+        float3 cLeft = SourceColor.SampleLevel(LinearSampler, warpedUV - float2(texel.x, 0.0f), 0.0f).rgb;
+        float3 cRight = SourceColor.SampleLevel(LinearSampler, warpedUV + float2(texel.x, 0.0f), 0.0f).rgb;
+        float3 cUp = SourceColor.SampleLevel(LinearSampler, warpedUV - float2(0.0f, texel.y), 0.0f).rgb;
+        float3 cDown = SourceColor.SampleLevel(LinearSampler, warpedUV + float2(0.0f, texel.y), 0.0f).rgb;
+
+        float lCenter = dot(cCenter, float3(0.2126f, 0.7152f, 0.0722f));
+        float lLeft = dot(cLeft, float3(0.2126f, 0.7152f, 0.0722f));
+        float lRight = dot(cRight, float3(0.2126f, 0.7152f, 0.0722f));
+        float lUp = dot(cUp, float3(0.2126f, 0.7152f, 0.0722f));
+        float lDown = dot(cDown, float3(0.2126f, 0.7152f, 0.0722f));
+
+        float grad = max(abs(lRight - lLeft), abs(lDown - lUp)) / max(View.PreExposure, 0.00001f);
+        float edgeWeight = smoothstep(AberrationEdgeThreshold * 0.5f, AberrationEdgeThreshold * 2.0f, grad);
+        float gate = lerp(1.0f, edgeWeight, AberrationEdgeSensitivity);
+
+        // Compute radial chromatic separation along the warped ray
+        float2 disp = v * (radialFalloff * gate * AberrationStrength * 0.035f);
+
+        float r = SourceColor.SampleLevel(LinearSampler, warpedUV + disp, 0.0f).r;
+        float g = SourceColor.SampleLevel(LinearSampler, warpedUV, 0.0f).g;
+        float b = SourceColor.SampleLevel(LinearSampler, warpedUV - disp, 0.0f).b;
+        finalColor = float3(r, g, b);
+    }
+    else
+    {
+        finalColor = SourceColor.SampleLevel(LinearSampler, warpedUV, 0.0f).rgb;
+    }
+
+    // Diagnostic view mode: Distortion calibration grid
+    if (DebugViewMode == 6)
+    {
+        float2 grid = frac(warpedUV * 16.0f);
+        if (grid.x < 0.06f || grid.y < 0.06f)
+        {
+            finalColor = lerp(finalColor, float3(0.0f, 1.0f, 0.2f) * View.PreExposure, 0.75f);
+        }
+    }
+
+    OutColor = float4(finalColor, source.a);
+}

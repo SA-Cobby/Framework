@@ -10,6 +10,8 @@
 #include "Misc/App.h"
 #include "Editor.h"
 #include "Styling/AppStyle.h"
+#include "EditorUtilityWidgetBlueprint.h"
+#include "Misc/PackageName.h"
 
 static const FName GuideTabName(TEXT("FrameworkDocumentation"));
 DEFINE_LOG_CATEGORY_STATIC(LogFrameworkDocumentation, Log, All);
@@ -63,8 +65,19 @@ public:
 
     TSharedRef<SDockTab> SpawnTab(const FSpawnTabArgs& Args)
     {
-        // The guide has no level/world dependency and survives map changes.
-        Widget.Reset(NewObject<UQuickGuideWidget>(GetTransientPackage()));
+        // Prefer the project's editable copy. Plugin template is the fallback for other projects.
+        const TCHAR* ProjectPackage = TEXT("/Game/StudioFramework/UI/EUW_FrameworkDocumentation");
+        const TCHAR* BlueprintPath = FPackageName::DoesPackageExist(ProjectPackage)
+            ? TEXT("/Game/StudioFramework/UI/EUW_FrameworkDocumentation.EUW_FrameworkDocumentation")
+            : TEXT("/FrameworkDocumentation/UI/EUW_FrameworkDocumentation.EUW_FrameworkDocumentation");
+        UEditorUtilityWidgetBlueprint* Blueprint = LoadObject<UEditorUtilityWidgetBlueprint>(nullptr, BlueprintPath);
+        UClass* WidgetClass = Blueprint ? Blueprint->GeneratedClass : nullptr;
+        if (!WidgetClass || !WidgetClass->IsChildOf(UQuickGuideWidget::StaticClass()))
+        {
+            UE_LOG(LogFrameworkDocumentation, Error, TEXT("Documentation Widget Blueprint is missing or has an incompatible parent: %s"), BlueprintPath);
+            WidgetClass = UQuickGuideWidget::StaticClass();
+        }
+        Widget.Reset(NewObject<UQuickGuideWidget>(GetTransientPackage(), WidgetClass));
         Widget->Initialize();
         TSharedRef<SDockTab> Tab = SNew(SDockTab).TabRole(ETabRole::NomadTab)[Widget->TakeWidget()];
         OpenTab = Tab;

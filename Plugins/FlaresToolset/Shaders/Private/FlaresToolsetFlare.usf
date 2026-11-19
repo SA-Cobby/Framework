@@ -1,0 +1,114 @@
+#include "/Engine/Private/Common.ush"
+
+Texture2D SourceColor;
+Texture2D StreakTexture;
+SamplerState LinearSampler;
+float4 Rect;
+float2 SceneSize;
+float2 WorkSize;
+float2 DirectionStep;
+float3 Tint;
+float Threshold;
+float SoftKnee;
+float Intensity;
+float ChromaticDispersion;
+int DebugViewMode;
+int Mode;
+
+float3 SampleStreak(float2 UV)
+{
+    if (any(UV < 0.0f) || any(UV > 1.0f)) return 0.0f;
+    return StreakTexture.SampleLevel(LinearSampler, UV, 0.0f).rgb;
+}
+
+void MainPS(float4 UVAndScreenPos : TEXCOORD0, float4 Position : SV_POSITION, out float4 Color : SV_Target0)
+{
+    if (Mode == 0)
+    {
+        // Bright extraction pass with soft-knee transition
+        float2 v = Position.xy / WorkSize;
+        float3 bright = 0.0f;
+        float knee = max(SoftKnee * Threshold, 0.001f);
+
+        [unroll] for (int y = 0; y < 2; ++y)
+        {
+            [unroll] for (int x = 0; x < 2; ++x)
+            {
+                float2 samplePixel = Rect.xy + (v + (float2(x, y) - 0.5f) * 0.5f / WorkSize) * Rect.zw;
+                samplePixel = clamp(samplePixel, Rect.xy + 0.5f, Rect.xy + Rect.zw - 0.5f);
+                float3 c = max(SourceColor.SampleLevel(LinearSampler, samplePixel / SceneSize, 0.0f).rgb, 0.0f);
+                float l = dot(c, float3(0.2126f, 0.7152f, 0.0722f)) / max(View.PreExposure, 0.00001f);
+
+                // Soft-knee transition curve
+                float soft = clamp((l - Threshold + knee) / (2.0f * knee), 0.0f, 1.0f);
+                float weight = (l > Threshold + knee)
+                    ? saturate((l - Threshold) / max(l, 0.00001f))
+                    : (soft * soft * saturate((l - (Threshold - knee)) / max(l, 0.00001f)));
+
+                bright += c * weight;
+            }
+        }
+        Color = float4(bright * 0.25f, 0.0f);
+    }
+    else if (Mode == 1)
+    {
+        // Dilated 5-tap streak blur
+        float2 uv = Position.xy / WorkSize;
+        float3 c = SampleStreak(uv) * 6.0f;
+        c += (SampleStreak(uv - DirectionStep) + SampleStreak(uv + DirectionStep)) * 4.0f;
+        c += SampleStreak(uv - 2.0f * DirectionStep) + SampleStreak(uv + 2.0f * DirectionStep);
+        Color = float4(c / 16.0f, 0.0f);
+    }
+    else if (Mode == 2)
+    {
+        // Composite pass with spectral dispersion and debug view modes
+        float4 source = SourceColor.Load(int3(Position.xy, 0));
+        float2 uv = (Position.xy - Rect.xy) / Rect.zw;
+
+        float3 streak;
+        if (ChromaticDispersion > 0.001f)
+        {
+            // Spectral dispersion along the streak axis
+            float2 disp = DirectionStep * (ChromaticDispersion * 2.5f);
+            float r = SampleStreak(uv - disp).r;
+            float g = SampleStreak(uv).g;
+            float b = SampleStreak(uv + disp).b;
+            streak = float3(r, g, b);
+        }
+        else
+        {
+            streak = SampleStreak(uv);
+        }
+
+        float3 flareColor = streak * Intensity * Tint;
+
+        if (DebugViewMode == 1) // FlaresOnly: flares over black background
+        {
+            Color = float4(flareColor, source.a);
+        }
+        else
+        {
+            Color = float4(source.rgb + flareColor, source.a);
+        }
+    }
+    else if (Mode == 3)
+    {
+        // Accumulate streaks across multiple axes: SourceColor is accumulator, StreakTexture is new axis
+        float2 uv = Position.xy / WorkSize;
+        float3 a = SourceColor.SampleLevel(LinearSampler, uv, 0.0f).rgb;
+        float3 b = StreakTexture.SampleLevel(LinearSampler, uv, 0.0f).rgb;
+        Color = float4(a + b, 0.0f);
+    }
+    else if (Mode == 4)
+    {
+        // Bright extraction threshold mask visualization
+        float2 uv = (Position.xy - Rect.xy) / Rect.zw;
+        float3 b = StreakTexture.SampleLevel(LinearSampler, uv, 0.0f).rgb;
+        float l = dot(b, float3(0.2126f, 0.7152f, 0.0722f));
+        Color = float4(float3(l, l, l), 1.0f);
+    }
+    else
+    {
+        Color = 0.0f;
+    }
+}
